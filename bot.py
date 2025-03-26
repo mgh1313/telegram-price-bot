@@ -1,74 +1,100 @@
-from flask import Flask, send_from_directory
-from telegram.ext import Updater, CommandHandler
-import price_checker
-import openpyxl
-import os
-import json
 
-TOKEN = os.environ.get("BOT_TOKEN")
-EXCEL_PATH = "static/data.xlsx"
-JSON_PATH = "static/last_prices.json"
+import os
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+from flask import Flask, send_file, request
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 app = Flask(__name__)
 
-@app.route("/")
-def index():
-    return "ربات تلگرام فعال است."
+PRODUCTS = []
+EXCEL_PATH = "static/products.xlsx"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+def scrape_products():
+    global PRODUCTS
+    PRODUCTS = []
+    page = 1
+    while True:
+        url = f"https://persian-gamer.com/product-category/psn-game-account/page/{page}/"
+        response = requests.get(url)
+        if response.status_code != 200:
+            break
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        items = soup.select("ul.products li.product")
+        if not items:
+            break
+
+        for item in items:
+            title_tag = item.select_one(".woocommerce-loop-product__title")
+            price_tag = item.select_one(".price")
+            if title_tag and price_tag:
+                title = title_tag.text.strip()
+                price = price_tag.text.strip()
+
+                capacity = ""
+                platform = ""
+                if "ظرفیت" in title:
+                    parts = title.split("ظرفیت")
+                    name = parts[0].strip()
+                    rest = parts[1].strip().split(" ", 1)
+                    capacity = rest[0]
+                    platform = rest[1] if len(rest) > 1 else ""
+                else:
+                    name = title
+
+                PRODUCTS.append({
+                    "نام محصول": name,
+                    "ظرفیت": capacity,
+                    "پلتفرم": platform,
+                    "قیمت": price
+                })
+        page += 1
+
+    save_to_excel()
+
+def save_to_excel():
+    df = pd.DataFrame(PRODUCTS)
+    df.to_excel(EXCEL_PATH, index=False)
 
 @app.route("/excel")
 def download_excel():
-    return send_from_directory("static", "data.xlsx", as_attachment=True)
+    return send_file(EXCEL_PATH, as_attachment=True)
 
-def load_last_prices():
-    if os.path.exists(JSON_PATH):
-        with open(JSON_PATH, "r") as f:
-            return json.load(f)
-    return {}
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("سلام! با دستور /check فایل اکسل قیمت‌ها رو بگیر یا اسم محصولی رو تایپ کن مثل fc 25 تا قیمت‌هاشو ببینی.")
 
-def save_last_prices(prices_dict):
-    with open(JSON_PATH, "w") as f:
-        json.dump(prices_dict, f)
+async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = request.host_url + "excel"
+    await update.message.reply_text(f"✅ قیمت‌ها دریافت شد.\n📥 لینک اکسل:\n{url}")
 
-def start(update, context):
-    update.message.reply_text("سلام! برای بررسی قیمت‌ها دستور /check رو بزن.")
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.lower()
+    results = [p for p in PRODUCTS if query in p['نام محصول'].lower()]
+    if not results:
+        await update.message.reply_text("❌ چیزی پیدا نشد.")
+        return
 
-def check(update, context):
-    prices = price_checker.fetch_prices()
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.append(["نام محصول", "قیمت"])
-
-    new_prices = {}
     messages = []
+    for r in results:
+        messages.append(f"📌 {r['نام محصول']}\n📦 ظرفیت: {r['ظرفیت']} - 🎮 {r['پلتفرم']}\n💵 قیمت: {r['قیمت']}")
 
-    last_prices = load_last_prices()
+    for msg in messages:
+        await update.message.reply_text(msg)
 
-    for item in prices:
-        title = item['title']
-        price = item['price']
-        new_prices[title] = price
-        ws.append([title, price])
+def run_telegram_bot():
+    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("check", check))
+    app_bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), search))
+    app_bot.run_polling()
 
-        if title in last_prices and last_prices[title] != price:
-            messages.append(f"🔄 تغییر قیمت: {title}\nقدیم: {last_prices[title]}\nجدید: {price}")
-
-    wb.save(EXCEL_PATH)
-    save_last_prices(new_prices)
-
-    if messages:
-        for msg in messages:
-            update.message.reply_text(msg)
-
-    update.message.reply_text("✅ قیمت‌ها دریافت شد.\n📥 لینک اکسل:\nhttps://<your-render-domain>/excel")
-
-def run_bot():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("check", check))
-    updater.start_polling()
-
-if __name__ == "__main__":
-    run_bot()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+if __name__ == '__main__':
+    if not os.path.exists("static"):
+        os.makedirs("static")
+    scrape_products()
+    run_telegram_bot()
+    app.run(debug=False, port=5000)
