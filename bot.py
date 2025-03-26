@@ -69,7 +69,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = request.host_url + "excel"
-    await update.message.reply_text(f"✅ قیمت‌ها دریافت شد.\n📥 لینک اکسل:\n{url}")
+    await update.message.reply_text(f"✅ قیمت‌ها دریافت شد.\n📥 لینک اکسل:\n{https://telegram-price-bot-1.onrender.com/excel}")
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.lower()
